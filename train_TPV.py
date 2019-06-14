@@ -144,7 +144,7 @@ def parse():
             "--h_freq",
             help="Select the frequencies above which to filter out of the data",
             type=float,
-            default=45.)
+            default=32.)
     parser.add_argument(
             "-ci",
             "--crop_min",
