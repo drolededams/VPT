@@ -17,6 +17,8 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.model_selection import ShuffleSplit, cross_val_score
 from sklearn.base import BaseEstimator, TransformerMixin
 
+from sklearn.externals import joblib
+
 
 def describe(arg):
     frame = inspect.currentframe()
@@ -115,10 +117,11 @@ def parse():
     parser.add_argument(
             "-nt",
             "--n_task",
-            help="Select number of runs task",
+            help="Select the runs task",
+            nargs='+',
             type=int,
             choices=range(1, 4),
-            default=3)
+            default=[1, 2, 3])
     parser.add_argument(
             "-ti",
             "--tmin",
@@ -186,15 +189,15 @@ def parse():
 
 
 def list_runs(args):
-    runs = [i for i in np.arange(
-        args.task + 2,
-        args.task + 2 + (args.n_task) * 4,
-        4)]
+    runs = []
+    for i in args.n_task:
+        runs.append(args.task + 2 + (i - 1) * 4)
+    print(runs)
     return runs
 
 
 def get_data(args):
-    runs = list_runs(args)
+    runs = list_runs(args)  # add selected runs
     raws = eegbci.load_data(args.subject, runs)
     raw = concatenate_raws([read_raw_edf(f, preload=True) for f in raws])  # concatenate same tasks
     return raw
@@ -237,11 +240,12 @@ def train(X, y, args):
     cv = ShuffleSplit(args.iterations, test_size=0.2, random_state=1)
     lda = LinearDiscriminantAnalysis()
     mycsp = myCSP(n_components=args.n_components)
-    clf = Pipeline([('CSP', mycsp), ('LDA', lda)])
-    scores = cross_val_score(clf, X, y, cv=cv)
+    pipeline = Pipeline([('CSP', mycsp), ('LDA', lda)])
+    scores = cross_val_score(pipeline, X, y, cv=cv)
     print("\n")
     print(scores)
     print("\nMean classification accuracy: %f" % np.mean(scores))
+    joblib.dump(pipeline, 'model.joblib')
 
 
 def main():
