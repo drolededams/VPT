@@ -201,9 +201,10 @@ def list_runs(args):
 
 
 def get_data(args):
-    runs = list_runs(args)  # add selected runs
-    raws = eegbci.load_data(args.subject, runs)
-    raw = concatenate_raws([read_raw_edf(f, preload=True) for f in raws])  # concatenate same tasks
+    path = '/sgoinfre/goinfre/Perso/dgameiro/TPV_database'
+    runs = list_runs(args)
+    raws = eegbci.load_data(args.subject, runs, path=path)
+    raw = concatenate_raws([read_raw_edf(f, preload=True) for f in raws])
     return raw
 
 
@@ -246,8 +247,6 @@ def train(X, y, args):
     mycsp = myCSP(n_components=args.n_components)
     pipeline = Pipeline([('CSP', mycsp), ('LDA', lda)])
     scores = cross_val_score(pipeline, X, y, cv=cv)
-    print("\n")
-    print(scores)
     print("\nMean classification accuracy: %f" % np.mean(scores))
     pipeline.fit(X, y)
     model_filename = 'model.sav'
@@ -256,24 +255,27 @@ def train(X, y, args):
     pickle.dump(args, open(args_filename, 'wb'))
 
 
+def prediction(X, y):
+    model_filename = 'model.sav'
+    loaded_model = pickle.load(open(model_filename, 'rb'))
+    score = loaded_model.score(X, y)
+    print("\n")
+    print(loaded_model.predict_proba(X))
+    print("\nClassification accuracy: %f" % score)
+
+
 def main():
     args = parse()
     raw = get_data(args)
-    model_filename = 'model.sav'
-    args_filename = 'args.sav'
     if args.plot:
         raw.plot(block=True)
         raw.plot_psd()
     if args.prediction:
+        args_filename = 'args.sav'
         loaded_args = pickle.load(open(args_filename, 'rb'))
         filter_raw(raw, loaded_args)
         X, y = preprocessing(raw, loaded_args)
-        loaded_model = pickle.load(open(model_filename, 'rb'))
-        score = loaded_model.score(X, y)
-        print("\n")
-        print(loaded_model.predict_proba(X))
-        print(len(loaded_model.predict_proba(X)))
-        print(score)
+        prediction(X, y)
     else:
         filter_raw(raw, args)
         X, y = preprocessing(raw, args)
