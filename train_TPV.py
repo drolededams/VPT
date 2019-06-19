@@ -1,6 +1,7 @@
 import inspect
 import re
 import argparse
+import pickle
 
 import numpy as np
 import scipy as scp
@@ -16,8 +17,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.model_selection import ShuffleSplit, cross_val_score
 from sklearn.base import BaseEstimator, TransformerMixin
-
-from sklearn.externals import joblib
 
 
 def describe(arg):
@@ -179,6 +178,11 @@ def parse():
             help="Plot data",
             action="store_true")
     parser.add_argument(
+            "-pr",
+            "--prediction",
+            help="Make Prediction",
+            action="store_true")
+    parser.add_argument(
             '-f',
             '--data_format',
             help='Select data formt',
@@ -245,18 +249,35 @@ def train(X, y, args):
     print("\n")
     print(scores)
     print("\nMean classification accuracy: %f" % np.mean(scores))
-    joblib.dump(pipeline, 'model.joblib')
+    pipeline.fit(X, y)
+    model_filename = 'model.sav'
+    args_filename = 'args.sav'
+    pickle.dump(pipeline, open(model_filename, 'wb'))
+    pickle.dump(args, open(args_filename, 'wb'))
 
 
 def main():
     args = parse()
     raw = get_data(args)
+    model_filename = 'model.sav'
+    args_filename = 'args.sav'
     if args.plot:
         raw.plot(block=True)
         raw.plot_psd()
-    filter_raw(raw, args)
-    X, y = preprocessing(raw, args)
-    train(X, y, args)
+    if args.prediction:
+        loaded_args = pickle.load(open(args_filename, 'rb'))
+        filter_raw(raw, loaded_args)
+        X, y = preprocessing(raw, loaded_args)
+        loaded_model = pickle.load(open(model_filename, 'rb'))
+        score = loaded_model.score(X, y)
+        print("\n")
+        print(loaded_model.predict_proba(X))
+        print(len(loaded_model.predict_proba(X)))
+        print(score)
+    else:
+        filter_raw(raw, args)
+        X, y = preprocessing(raw, args)
+        train(X, y, args)
 
 
 if __name__ == '__main__':
