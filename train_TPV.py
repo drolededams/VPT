@@ -2,6 +2,8 @@ import inspect
 import re
 import argparse
 import pickle
+import mne
+import sys
 
 import numpy as np
 import scipy as scp
@@ -9,8 +11,10 @@ import scipy as scp
 from mne import Epochs, pick_types, events_from_annotations
 from mne.io import concatenate_raws, read_raw_edf
 from mne.datasets import eegbci
-from mne.decoding import CSP
+from mne.decoding import CSP, FilterEstimator
 from mne.time_frequency import psd_multitaper
+from mne.realtime import MockRtClient, RtEpochs
+from mne import create_info
 
 
 from sklearn.pipeline import Pipeline
@@ -76,8 +80,12 @@ class myCSP(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        X_filtred = np.asarray([np.dot(self.spatialFilters_, epoch) for epoch in X])
-        X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
+        if X.ndim == 3:
+            X_filtred = np.asarray([np.dot(self.spatialFilters_, epoch) for epoch in X])
+            X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
+        else:
+            X_filtred = np.asarray([np.dot(self.spatialFilters_, X)])
+            X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
         return X_filtred
 
 
@@ -138,13 +146,13 @@ def parse():
     parser.add_argument(
             "-lf",
             "--l_freq",
-            help="Select the frequencies below which to filter out of the data",
+            help="Select the frequence below which to filter out of the data",
             type=float,
             default=8.)
     parser.add_argument(
             "-hf",
             "--h_freq",
-            help="Select the frequencies above which to filter out of the data",
+            help="Select the frequence above which to filter out of the data",
             type=float,
             default=32.)
     parser.add_argument(
@@ -173,14 +181,14 @@ def parse():
             choices=range(1, 65),
             default=4)
     parser.add_argument(
-            "-p",
+            "-pl",
             "--plot",
             help="Plot data",
             action="store_true")
     parser.add_argument(
-            "-pr",
-            "--prediction",
-            help="Make Prediction",
+            "-p",
+            "--predictions",
+            help="Make Predictions",
             action="store_true")
     parser.add_argument(
             '-f',
@@ -188,15 +196,71 @@ def parse():
             help='Select data formt',
             choices=['normal', 'psd'],
             default=['normal'])
+    parser.add_argument(
+            "-rtp",
+            "--real_time_predictions",
+            help="Real Time Predictions",
+            action="store_true")
+    parser.add_argument(
+            "-pref",
+            "--pre_filter",
+            help="Pre Filter for real time prediction",
+            action="store_true")
     args = parser.parse_args()
     return args
+
+
+def differences(a, b):
+    if len(a) != len(b):
+        raise ValueError("Lists of different length.")
+    return sum(i != j for i, j in zip(a, b))
+
+
+def load_args():
+    args_filename = 'args.sav'
+    try:
+        loaded_args = pickle.load(open(args_filename, 'rb'))
+    except Exception as e:
+        print("Can't use pickle on {}".format(args_filename))
+        print(e.__doc__)
+        sys.exit(0)
+    return loaded_args
+
+
+def load_model():
+    model_filename = 'model.sav'
+    try:
+        loaded_model = pickle.load(open(model_filename, 'rb'))
+    except Exception as e:
+        print("Can't use pickle on {}".format(model_filename))
+        print(e.__doc__)
+        sys.exit(0)
+    return loaded_model
+
+
+def save_model(X, y, pipeline, args):
+    pipeline.fit(X, y)
+    model_filename = 'model.sav'
+    args_filename = 'args.sav'
+    try:
+        pickle.dump(pipeline, open(model_filename, 'wb'))
+    except Exception as e:
+        print("Can't use pickle on {}".format(model_filename))
+        print(e.__doc__)
+        sys.exit(0)
+    try:
+        pickle.dump(args, open(args_filename, 'wb'))
+    except Exception as e:
+        print("Can't use pickle on {}".format(args_filename))
+        print(e.__doc__)
+        sys.exit(0)
 
 
 def list_runs(args):
     runs = []
     for i in args.n_task:
         runs.append(args.task + 2 + (i - 1) * 4)
-    print(runs)
+    print("Runs =", runs)
     return runs
 
 
@@ -210,24 +274,29 @@ def get_data(args):
 
 def filter_raw(raw, args):
     raw.filter(args.l_freq, args.h_freq)
-    if args.plot:
-        raw.plot(block=True)
-        raw.plot_psd()
 
 
 def preprocessing(raw, args):
+    # Get events
     events, events_id = events_from_annotations(raw)
     if args.task == 1 or args.task == 2:
         events_id = dict(right=2, left=3)
     else:
         events_id = dict(hands=2, feet=3)
+
     picks = pick_types(raw.info, eeg=True)
+
+    # Get epochs and labels (class y) from events
     epochs = Epochs(
             raw, events, events_id,
             args.tmin, args.tmax, picks=picks, proj=True, preload=True)
+    describe(epochs.selection)
+    y = epochs.events[:, -1] - 2
+
     if args.plot:
         epochs.plot_psd()
-    y = epochs.events[:, -1] - 2
+
+    # Get X
     if args.data_format[0] == 'normal':
         epochs_train = epochs.copy().crop(
                                     tmin=args.crop_min, tmax=args.crop_max)
@@ -241,45 +310,134 @@ def preprocessing(raw, args):
     return X, y
 
 
-def train(X, y, args):
+def model_training(X, y, args):
     cv = ShuffleSplit(args.iterations, test_size=0.2, random_state=1)
     lda = LinearDiscriminantAnalysis()
     mycsp = myCSP(n_components=args.n_components)
     pipeline = Pipeline([('CSP', mycsp), ('LDA', lda)])
     scores = cross_val_score(pipeline, X, y, cv=cv)
-    print("\nMean classification accuracy: %f" % np.mean(scores))
-    pipeline.fit(X, y)
-    model_filename = 'model.sav'
-    args_filename = 'args.sav'
-    pickle.dump(pipeline, open(model_filename, 'wb'))
-    pickle.dump(args, open(args_filename, 'wb'))
+    print("Scores:", scores)
+    print("Mean classification accuracy: %f" % np.mean(scores))
+    save_model(X, y, pipeline, args)
 
 
-def prediction(X, y):
-    model_filename = 'model.sav'
-    loaded_model = pickle.load(open(model_filename, 'rb'))
+def model_prediction(X, y):
+    loaded_model = load_model()
     score = loaded_model.score(X, y)
-    print("\n")
     print(loaded_model.predict_proba(X))
+    print([np.argmax(n) for n in loaded_model.predict_proba(X)])
+    test = []
+    [test.append(np.argmax(n)) for n in loaded_model.predict_proba(X)]
+    y = y.tolist()
+    print(y)
+    print(differences(y, test))
     print("\nClassification accuracy: %f" % score)
+
+
+def prediction_preprocessing(raw, args, filtering):
+    events, events_id = events_from_annotations(raw)
+    describe(events)
+    describe(events_id)
+    tmax = raw[-1][-1][-1]
+    if args.task == 1 or args.task == 2:
+        events_id = dict(right=2, left=3)
+    else:
+        events_id = dict(hands=2, feet=3)
+    picks = pick_types(raw.info, eeg=True)
+    epochs = Epochs(
+            raw, events, events_id,
+            args.tmin, args.tmax, picks=picks, proj=True, preload=True)
+    describe(epochs.event_id)
+    describe(epochs.selection)
+    describe(raw.annotations)
+    describe(raw.annotations.__getitem__(-1))
+    # raw.annotations.delete(1)
+    describe(raw.annotations)
+    info = mne.create_info(['STI'], raw.info['sfreq'], ['stim'])
+    describe(info)
+    describe(raw.info['sfreq'])
+    stim_data = np.zeros((1, len(raw.times)))
+    stim_raw = mne.io.RawArray(stim_data, info)
+    describe(stim_raw.annotations)
+    raw.add_channels([stim_raw], force_update_info=True)
+    raw.add_events(events, stim_channel='STI')
+    rt_client = MockRtClient(raw)
+    rt_epochs = RtEpochs(
+            rt_client, events_id,
+            args.tmin, args.tmax, picks=picks, proj=True, stim_channel='STI')
+    loaded_model = load_model()
+    test = []
+    rt_epochs.start()
+    rt_client.send_data(rt_epochs, picks, tmin=0, tmax=tmax, buffer_size=1000)
+    y = rt_epochs.events[:, -1] - 2
+    for ep_num, X in enumerate(rt_epochs.iter_evoked()):
+        print("Just got epoch %d" % (ep_num + 1))
+        X.crop(args.crop_min, args.crop_max)
+        if filtering:
+            X.filter(args.l_freq, args.h_freq)
+        X = X.data
+        prediction = np.argmax(loaded_model.predict_proba(X))
+        test.append(prediction)
+        print(prediction)
+    lest = y.tolist()
+    print(differences(test, lest))
+
+
+def real_time_predictions(raw, args):
+    loaded_args = load_args()
+
+    # Filtering
+    if args.pre_filter:
+        filter_raw(raw, loaded_args)
+
+    # Preprocessing
+    prediction_preprocessing(raw, loaded_args, not args.pre_filter)
+
+    # Real Time Prediction
+
+
+def predictions(raw, args):
+    loaded_args = load_args()
+
+    # Filtering
+    filter_raw(raw, loaded_args)
+
+    # Preprocessing
+    X, y = preprocessing(raw, loaded_args)
+
+    # Prediction
+    model_prediction(X, y)
+
+
+def train(raw, args):
+    if args.plot:
+        raw.plot(block=True)
+        raw.plot_psd()
+
+    # Filtering
+    filter_raw(raw, args)
+
+    if args.plot:
+        raw.plot(block=True)
+        raw.plot_psd()
+
+    # Preprocessing
+    X, y = preprocessing(raw, args)
+
+    # Training
+    model_training(X, y, args)
 
 
 def main():
     args = parse()
     raw = get_data(args)
-    if args.plot:
-        raw.plot(block=True)
-        raw.plot_psd()
-    if args.prediction:
-        args_filename = 'args.sav'
-        loaded_args = pickle.load(open(args_filename, 'rb'))
-        filter_raw(raw, loaded_args)
-        X, y = preprocessing(raw, loaded_args)
-        prediction(X, y)
+
+    if args.real_time_predictions:
+        real_time_predictions(raw, args)
+    elif args.predictions:
+        predictions(raw, args)
     else:
-        filter_raw(raw, args)
-        X, y = preprocessing(raw, args)
-        train(X, y, args)
+        train(raw, args)
 
 
 if __name__ == '__main__':
