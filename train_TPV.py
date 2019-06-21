@@ -12,10 +12,8 @@ import scipy as scp
 from mne import Epochs, pick_types, events_from_annotations
 from mne.io import concatenate_raws, read_raw_edf
 from mne.datasets import eegbci
-from mne.decoding import CSP, FilterEstimator
 from mne.time_frequency import psd_multitaper
 from mne.realtime import MockRtClient, RtEpochs
-from mne import create_info
 
 
 from sklearn.pipeline import Pipeline
@@ -82,12 +80,11 @@ class myCSP(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         if X.ndim == 3:
-            X_filtred = np.asarray([np.dot(self.spatialFilters_, epoch) for epoch in X])
-            calc_var(X_filtred)
+            X_filtred = np.asarray(
+                    [np.dot(self.spatialFilters_, epoch) for epoch in X])
             X_filtred = np.log(calc_var(X_filtred))
         else:
             X_filtred = np.asarray([np.dot(self.spatialFilters_, X)])
-            calc_var(X_filtred)
             X_filtred = np.log(calc_var(X_filtred))
         return X_filtred
 
@@ -104,7 +101,6 @@ def calc_var(X):
     return var
 
 
-
 class Range(object):
     def __init__(self, start, end):
         self.start = start
@@ -117,7 +113,8 @@ class Range(object):
 def check_positive(value):
     ivalue = int(value)
     if ivalue <= 0:
-        raise argparse.ArgumentTypeError("%s is an invalid positive int value" % value)
+        raise argparse.ArgumentTypeError(
+                "%s is an invalid positive int value" % value)
     return ivalue
 
 
@@ -139,7 +136,10 @@ def parse():
     parser.add_argument(
             "-t",
             "--task",
-            help="Select a task: - 1: open and close left or right fist - 2:imagine opening and closing left or right fist - 3:open and close both fists or both feet - 4:imagine opening and closing both fists or both feet",
+            help="Select a task: - 1: open and close left or right fist" +
+            " - 2:imagine opening and closing left or right fist" +
+            " - 3:open and close both fists or both feet" +
+            " - 4:imagine opening and closing both fists or both feet",
             type=int,
             choices=range(1, 5),
             default=1)
@@ -232,16 +232,25 @@ def parse():
 
 def verif_args(args):
     if args.l_freq >= args.h_freq:
-        print("Argument Error: Low cut-off frequency must be greater than High cut-off frequency")
+        print(
+            "Argument Error: " +
+            "Low cut-off frequency must be greater than High cut-off frequency"
+            )
         sys.exit(0)
     if args.tmin > args.crop_min:
-        print("Argument Error: Time before events must be lower than time minimum croped")
+        print(
+            "Argument Error: " +
+            "Time before events must be lower than time minimum croped")
         sys.exit(0)
     if args.tmax < args.crop_max:
-        print("Argument Error: Time after events must be greater than time maximum croped")
+        print(
+            "Argument Error: " +
+            "Time after events must be greater than time maximum croped")
         sys.exit(0)
     if args.crop_max - 0.1 < args.crop_min:
-        print("Argument Error: Time maximum croped must be greater than time minimum croped")
+        print(
+            "Argument Error: " +
+            "Time maximum croped must be greater than time minimum croped")
         sys.exit(0)
 
 
