@@ -312,9 +312,10 @@ def list_runs(args):
     for i in args.n_task:
         runs.append(args.task + 2 + (i - 1) * 4)
 
-    print("Subject:", args.subject)
+    print("\nSubject:", args.subject)
     print("Task:", task[args.task])
     print("Runs =", runs)
+    print("Mode:", args.mode)
 
     return runs
 
@@ -461,6 +462,7 @@ def real_time_predictions(raw, args):
     data_format = loaded_args.data_format
     pre_filt = args.pre_filter
     task = args.task
+    print("Format:", data_format)
     if args.saved_filter:
         args = loaded_args
 
@@ -480,6 +482,7 @@ def predictions(raw, args):
     raw.drop_channels(loaded_args.bads)
     task = args.task
     data_format = loaded_args.data_format
+    print("Format:", data_format)
     if args.saved_filter:
         args = loaded_args
 
@@ -494,6 +497,7 @@ def predictions(raw, args):
 
 
 def train(raw, args):
+    print("Format:", args.data_format)
     if args.plot:
         raw.plot(block=True)
         raw.plot_psd()
