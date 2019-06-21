@@ -84,23 +84,25 @@ class myCSP(BaseEstimator, TransformerMixin):
         if X.ndim == 3:
             X_filtred = np.asarray([np.dot(self.spatialFilters_, epoch) for epoch in X])
             calc_var(X_filtred)
-            X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
+            X_filtred = np.log(calc_var(X_filtred))
         else:
             X_filtred = np.asarray([np.dot(self.spatialFilters_, X)])
             calc_var(X_filtred)
-            X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
+            X_filtred = np.log(calc_var(X_filtred))
         return X_filtred
 
 
 def calc_var(X):
-    describe(X)
+    var = []
     for x in X:
-        describe(x)
         n_times = x.shape[1]
         mean = x.sum(axis=1) / n_times
-        describe(mean)
-        describe(x - mean)
-    describe(X.var(axis=2, ddof=1))
+        tmp = np.power(x - mean.reshape(4, 1), 2)
+        tmp = tmp.sum(axis=1) / (n_times - 1)
+        var.append(tmp)
+    var = np.asarray(var)
+    return var
+
 
 
 class Range(object):
