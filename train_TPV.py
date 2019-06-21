@@ -108,6 +108,12 @@ def check_positive(value):
 def parse():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+            "mode",
+            help="Mode : train, prediction or real time prediction",
+            nargs='?',
+            default="train",
+            choices=["train", "predict", "rtpredict"])
+    parser.add_argument(
             "-s",
             "--subject",
             help="Select a subject (1 to 109)",
@@ -186,25 +192,20 @@ def parse():
             help="Plot data",
             action="store_true")
     parser.add_argument(
-            "-p",
-            "--predictions",
-            help="Make Predictions",
-            action="store_true")
-    parser.add_argument(
             '-f',
             '--data_format',
             help='Select data formt',
             choices=['normal', 'psd'],
             default=['normal'])
     parser.add_argument(
-            "-rtp",
-            "--real_time_predictions",
-            help="Real Time Predictions",
-            action="store_true")
-    parser.add_argument(
             "-pref",
             "--pre_filter",
             help="Pre Filter for real time prediction",
+            action="store_true")
+    parser.add_argument(
+            "-sf",
+            "--saved_filter",
+            help="Use saved filter",
             action="store_true")
     args = parser.parse_args()
     return args
@@ -257,10 +258,21 @@ def save_model(X, y, pipeline, args):
 
 
 def list_runs(args):
+    task = {
+            1: '1 - Open and close left or right fist',
+            2: '2 - Imagine opening and closing left or right fist',
+            3: '3 - Open and close both fists or both feet',
+            4: '4 - Imagine opening and closing both fists or both feet',
+            }
     runs = []
+
     for i in args.n_task:
         runs.append(args.task + 2 + (i - 1) * 4)
+
+    print("Subject:", args.subject)
+    print("Task:", task[args.task])
     print("Runs =", runs)
+
     return runs
 
 
@@ -276,10 +288,10 @@ def filter_raw(raw, args):
     raw.filter(args.l_freq, args.h_freq)
 
 
-def preprocessing(raw, args):
+def preprocessing(raw, args, task, train=True):
     # Get events
     events, events_id = events_from_annotations(raw)
-    if args.task == 1 or args.task == 2:
+    if task == 1 or task == 2:
         events_id = dict(right=2, left=3)
     else:
         events_id = dict(hands=2, feet=3)
@@ -290,10 +302,9 @@ def preprocessing(raw, args):
     epochs = Epochs(
             raw, events, events_id,
             args.tmin, args.tmax, picks=picks, proj=True, preload=True)
-    describe(epochs.selection)
     y = epochs.events[:, -1] - 2
 
-    if args.plot:
+    if args.plot and train:
         epochs.plot_psd()
 
     # Get X
@@ -324,86 +335,102 @@ def model_training(X, y, args):
 def model_prediction(X, y):
     loaded_model = load_model()
     score = loaded_model.score(X, y)
-    print(loaded_model.predict_proba(X))
-    print([np.argmax(n) for n in loaded_model.predict_proba(X)])
-    test = []
-    [test.append(np.argmax(n)) for n in loaded_model.predict_proba(X)]
+    predict_proba = loaded_model.predict_proba(X)
+    predictions = []
+    [predictions.append(np.argmax(n)) for n in predict_proba]
     y = y.tolist()
-    print(y)
-    print(differences(y, test))
+    errors = differences(y, predictions)
+    print("\n")
+    print(y, "-> Class")
+    print(predictions, "-> Predictions")
     print("\nClassification accuracy: %f" % score)
+    print("Error(s):", errors)
 
 
-def prediction_preprocessing(raw, args, filtering):
-    events, events_id = events_from_annotations(raw)
-    describe(events)
-    describe(events_id)
-    tmax = raw[-1][-1][-1]
-    if args.task == 1 or args.task == 2:
-        events_id = dict(right=2, left=3)
-    else:
-        events_id = dict(hands=2, feet=3)
-    picks = pick_types(raw.info, eeg=True)
-    epochs = Epochs(
-            raw, events, events_id,
-            args.tmin, args.tmax, picks=picks, proj=True, preload=True)
-    describe(epochs.event_id)
-    describe(epochs.selection)
-    describe(raw.annotations)
-    describe(raw.annotations.__getitem__(-1))
-    # raw.annotations.delete(1)
-    describe(raw.annotations)
-    info = mne.create_info(['STI'], raw.info['sfreq'], ['stim'])
-    describe(info)
-    describe(raw.info['sfreq'])
-    stim_data = np.zeros((1, len(raw.times)))
-    stim_raw = mne.io.RawArray(stim_data, info)
-    describe(stim_raw.annotations)
-    raw.add_channels([stim_raw], force_update_info=True)
-    raw.add_events(events, stim_channel='STI')
-    rt_client = MockRtClient(raw)
-    rt_epochs = RtEpochs(
-            rt_client, events_id,
-            args.tmin, args.tmax, picks=picks, proj=True, stim_channel='STI')
+def model_rt_prediction(rt_epochs, args, filtering):
     loaded_model = load_model()
-    test = []
-    rt_epochs.start()
-    rt_client.send_data(rt_epochs, picks, tmin=0, tmax=tmax, buffer_size=1000)
+    predictions = []
     y = rt_epochs.events[:, -1] - 2
+
     for ep_num, X in enumerate(rt_epochs.iter_evoked()):
         print("Just got epoch %d" % (ep_num + 1))
         X.crop(args.crop_min, args.crop_max)
         if filtering:
             X.filter(args.l_freq, args.h_freq)
-        X = X.data
+        if args.data_format[0] == 'normal':
+            X = X.data
+        else:
+            psds, freqs = psd_multitaper(
+                    X, low_bias=False, proj=True)
+            X = psds
         prediction = np.argmax(loaded_model.predict_proba(X))
-        test.append(prediction)
+        predictions.append(prediction)
         print(prediction)
-    lest = y.tolist()
-    print(differences(test, lest))
+    y = y.tolist()
+    size = len(y)
+    errors = differences(predictions, y)
+    score = (size - errors) / size * 100
+    print("\n")
+    print(y, "-> Class")
+    print(predictions, "-> Predictions")
+    print("\nClassification accuracy: %f" % score)
+    print("Error(s):", errors)
+
+
+def rt_prediction_preprocessing(raw, args, task):
+    events, events_id = events_from_annotations(raw)
+    tmax = raw[-1][-1][-1]
+    if task == 1 or task == 2:
+        events_id = dict(right=2, left=3)
+    else:
+        events_id = dict(hands=2, feet=3)
+    picks = pick_types(raw.info, eeg=True)
+
+    # Create channel event trigger with annotations
+    info = mne.create_info(['STI'], raw.info['sfreq'], ['stim'])
+    stim_data = np.zeros((1, len(raw.times)))
+    stim_raw = mne.io.RawArray(stim_data, info)
+    raw.add_channels([stim_raw], force_update_info=True)
+    raw.add_events(events, stim_channel='STI')
+
+    # Init Mock Real Time
+    rt_client = MockRtClient(raw)
+    rt_epochs = RtEpochs(
+            rt_client, events_id,
+            args.tmin, args.tmax, picks=picks, proj=True, stim_channel='STI')
+    rt_epochs.start()
+    rt_client.send_data(rt_epochs, picks, tmin=0, tmax=tmax, buffer_size=1000)
+
+    return rt_epochs
 
 
 def real_time_predictions(raw, args):
-    loaded_args = load_args()
+    pre_filt = args.pre_filter
+    task = args.task
+    if args.saved_filter:
+        args = load_args()
 
     # Filtering
-    if args.pre_filter:
-        filter_raw(raw, loaded_args)
+    if pre_filt:
+        filter_raw(raw, args)
 
     # Preprocessing
-    prediction_preprocessing(raw, loaded_args, not args.pre_filter)
+    rt_epochs = rt_prediction_preprocessing(raw, args, task)
 
     # Real Time Prediction
+    model_rt_prediction(rt_epochs, args, not pre_filt)
 
 
 def predictions(raw, args):
-    loaded_args = load_args()
+    task = args.task
+    if args.saved_filter:
+        args = load_args()
 
     # Filtering
-    filter_raw(raw, loaded_args)
+    filter_raw(raw, args)
 
     # Preprocessing
-    X, y = preprocessing(raw, loaded_args)
+    X, y = preprocessing(raw, args, task, train=False)
 
     # Prediction
     model_prediction(X, y)
@@ -422,22 +449,22 @@ def train(raw, args):
         raw.plot_psd()
 
     # Preprocessing
-    X, y = preprocessing(raw, args)
+    X, y = preprocessing(raw, args, args.task)
 
     # Training
     model_training(X, y, args)
 
 
 def main():
+    mode = {
+            'train': train,
+            'predict': predictions,
+            'rtpredict': real_time_predictions,
+    }
+
     args = parse()
     raw = get_data(args)
-
-    if args.real_time_predictions:
-        real_time_predictions(raw, args)
-    elif args.predictions:
-        predictions(raw, args)
-    else:
-        train(raw, args)
+    mode[args.mode](raw, args)
 
 
 if __name__ == '__main__':
