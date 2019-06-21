@@ -4,6 +4,7 @@ import argparse
 import pickle
 import mne
 import sys
+import warnings
 
 import numpy as np
 import scipy as scp
@@ -72,21 +73,34 @@ class myCSP(BaseEstimator, TransformerMixin):
             X_classed = X_classed.reshape(n_channels, -1)
             cov = X_classed.dot(X_classed.T) / (X_classed.shape[1])
             covs[class_id] = cov
-        eigen_values, eigen_vectors = scp.linalg.eigh(covs[0], covs[0] + covs[1])
-        ix = np.argsort(np.abs(eigen_values - 0.5))[::-1] # to select better (n component option)
-        eigen_vectors = eigen_vectors[:, ix]
-        self.spatialFilters_ = eigen_vectors.T
+        eigen_val, eigen_vecs = scp.linalg.eigh(covs[0], covs[0] + covs[1])
+        ix = np.argsort(np.abs(eigen_val - 0.5))[::-1]
+        eigen_vecs = eigen_vecs[:, ix]
+        self.spatialFilters_ = eigen_vecs.T
         self.spatialFilters_ = self.spatialFilters_[:self.n_components]
         return self
 
     def transform(self, X):
         if X.ndim == 3:
             X_filtred = np.asarray([np.dot(self.spatialFilters_, epoch) for epoch in X])
+            calc_var(X_filtred)
             X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
         else:
             X_filtred = np.asarray([np.dot(self.spatialFilters_, X)])
+            calc_var(X_filtred)
             X_filtred = np.log(X_filtred.var(axis=2, ddof=1)) # manual var ?
         return X_filtred
+
+
+def calc_var(X):
+    describe(X)
+    for x in X:
+        describe(x)
+        n_times = x.shape[1]
+        mean = x.sum(axis=1) / n_times
+        describe(mean)
+        describe(x - mean)
+    describe(X.var(axis=2, ddof=1))
 
 
 class Range(object):
@@ -154,23 +168,25 @@ def parse():
             "--l_freq",
             help="Select the frequence below which to filter out of the data",
             type=float,
+            choices=[Range(0, 79.)],
             default=8.)
     parser.add_argument(
             "-hf",
             "--h_freq",
             help="Select the frequence above which to filter out of the data",
             type=float,
+            choices=[Range(1, 79.9)],
             default=32.)
     parser.add_argument(
             "-ci",
             "--crop_min",
-            help="Start time in seconds of the epoch",
+            help="Start time in seconds of the croped epoch",
             type=float,
             default=0.5)
     parser.add_argument(
             "-ca",
             "--crop_max",
-            help="End time in seconds of the epoch",
+            help="End time in seconds of the croped epoch",
             type=float,
             default=2.5)
     parser.add_argument(
@@ -196,7 +212,7 @@ def parse():
             '--data_format',
             help='Select data formt',
             choices=['normal', 'psd'],
-            default=['normal'])
+            default='normal')
     parser.add_argument(
             "-pref",
             "--pre_filter",
@@ -208,7 +224,23 @@ def parse():
             help="Use saved filter",
             action="store_true")
     args = parser.parse_args()
+    verif_args(args)
     return args
+
+
+def verif_args(args):
+    if args.l_freq >= args.h_freq:
+        print("Argument Error: Low cut-off frequency must be greater than High cut-off frequency")
+        sys.exit(0)
+    if args.tmin > args.crop_min:
+        print("Argument Error: Time before events must be lower than time minimum croped")
+        sys.exit(0)
+    if args.tmax < args.crop_max:
+        print("Argument Error: Time after events must be greater than time maximum croped")
+        sys.exit(0)
+    if args.crop_max - 0.1 < args.crop_min:
+        print("Argument Error: Time maximum croped must be greater than time minimum croped")
+        sys.exit(0)
 
 
 def differences(a, b):
@@ -288,7 +320,7 @@ def filter_raw(raw, args):
     raw.filter(args.l_freq, args.h_freq)
 
 
-def preprocessing(raw, args, task, train=True):
+def preprocessing(raw, data_format, args, task, train=True):
     # Get events
     events, events_id = events_from_annotations(raw)
     if task == 1 or task == 2:
@@ -308,7 +340,7 @@ def preprocessing(raw, args, task, train=True):
         epochs.plot_psd()
 
     # Get X
-    if args.data_format[0] == 'normal':
+    if data_format == 'normal':
         epochs_train = epochs.copy().crop(
                                     tmin=args.crop_min, tmax=args.crop_max)
         X = epochs_train.get_data()
@@ -327,49 +359,23 @@ def model_training(X, y, args):
     mycsp = myCSP(n_components=args.n_components)
     pipeline = Pipeline([('CSP', mycsp), ('LDA', lda)])
     scores = cross_val_score(pipeline, X, y, cv=cv)
-    print("Scores:", scores)
-    print("Mean classification accuracy: %f" % np.mean(scores))
+    print("\nScores:", scores)
+    print("\nMean classification accuracy: %f" % np.mean(scores))
     save_model(X, y, pipeline, args)
 
 
 def model_prediction(X, y):
     loaded_model = load_model()
+
+    # Calc of Predictions
     score = loaded_model.score(X, y)
     predict_proba = loaded_model.predict_proba(X)
+
+    # Displaying Results
     predictions = []
     [predictions.append(np.argmax(n)) for n in predict_proba]
     y = y.tolist()
     errors = differences(y, predictions)
-    print("\n")
-    print(y, "-> Class")
-    print(predictions, "-> Predictions")
-    print("\nClassification accuracy: %f" % score)
-    print("Error(s):", errors)
-
-
-def model_rt_prediction(rt_epochs, args, filtering):
-    loaded_model = load_model()
-    predictions = []
-    y = rt_epochs.events[:, -1] - 2
-
-    for ep_num, X in enumerate(rt_epochs.iter_evoked()):
-        print("Just got epoch %d" % (ep_num + 1))
-        X.crop(args.crop_min, args.crop_max)
-        if filtering:
-            X.filter(args.l_freq, args.h_freq)
-        if args.data_format[0] == 'normal':
-            X = X.data
-        else:
-            psds, freqs = psd_multitaper(
-                    X, low_bias=False, proj=True)
-            X = psds
-        prediction = np.argmax(loaded_model.predict_proba(X))
-        predictions.append(prediction)
-        print(prediction)
-    y = y.tolist()
-    size = len(y)
-    errors = differences(predictions, y)
-    score = (size - errors) / size * 100
     print("\n")
     print(y, "-> Class")
     print(predictions, "-> Predictions")
@@ -404,11 +410,48 @@ def rt_prediction_preprocessing(raw, args, task):
     return rt_epochs
 
 
+def model_rt_prediction(rt_epochs, data_format, args, filtering):
+    loaded_model = load_model()
+    predictions = []
+    y = rt_epochs.events[:, -1] - 2
+
+    # Calc of Real Time Predictions
+    print("\n")
+    for ep_num, X in enumerate(rt_epochs.iter_evoked()):
+        print("Just got epoch %d" % (ep_num + 1))
+        X.crop(args.crop_min, args.crop_max)
+        if filtering:
+            X.filter(args.l_freq, args.h_freq)
+        if data_format == 'normal':
+            X = X.data
+        else:
+            psds, freqs = psd_multitaper(
+                    X, low_bias=False, proj=True)
+            X = psds
+        prediction = np.argmax(loaded_model.predict_proba(X))
+        predictions.append(prediction)
+        print(prediction)
+
+    # Displaying Results
+    y = y.tolist()
+    size = len(y)
+    errors = differences(predictions, y)
+    score = (size - errors) / size
+    print("\n")
+    print(y, "-> Class")
+    print(predictions, "-> Predictions")
+    print("\nClassification accuracy: %f" % score)
+    print("Error(s):", errors)
+
+
 def real_time_predictions(raw, args):
+    loaded_args = load_args()
+    raw.drop_channels(loaded_args.bads)
+    data_format = loaded_args.data_format
     pre_filt = args.pre_filter
     task = args.task
     if args.saved_filter:
-        args = load_args()
+        args = loaded_args
 
     # Filtering
     if pre_filt:
@@ -418,19 +461,22 @@ def real_time_predictions(raw, args):
     rt_epochs = rt_prediction_preprocessing(raw, args, task)
 
     # Real Time Prediction
-    model_rt_prediction(rt_epochs, args, not pre_filt)
+    model_rt_prediction(rt_epochs, data_format, args, not pre_filt)
 
 
 def predictions(raw, args):
+    loaded_args = load_args()
+    raw.drop_channels(loaded_args.bads)
     task = args.task
+    data_format = loaded_args.data_format
     if args.saved_filter:
-        args = load_args()
+        args = loaded_args
 
     # Filtering
     filter_raw(raw, args)
 
     # Preprocessing
-    X, y = preprocessing(raw, args, task, train=False)
+    X, y = preprocessing(raw, data_format, args, task, train=False)
 
     # Prediction
     model_prediction(X, y)
@@ -448,8 +494,10 @@ def train(raw, args):
         raw.plot(block=True)
         raw.plot_psd()
 
+    args.bads = raw.info['bads']
+
     # Preprocessing
-    X, y = preprocessing(raw, args, args.task)
+    X, y = preprocessing(raw, args.data_format, args, args.task)
 
     # Training
     model_training(X, y, args)
@@ -461,6 +509,7 @@ def main():
             'predict': predictions,
             'rtpredict': real_time_predictions,
     }
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
 
     args = parse()
     raw = get_data(args)
