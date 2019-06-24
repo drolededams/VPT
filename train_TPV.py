@@ -74,17 +74,17 @@ class myCSP(BaseEstimator, TransformerMixin):
         eigen_val, eigen_vecs = scp.linalg.eigh(covs[0], covs[0] + covs[1])
         ix = np.argsort(np.abs(eigen_val - 0.5))[::-1]
         eigen_vecs = eigen_vecs[:, ix]
-        self.spatialFilters_ = eigen_vecs.T
-        self.spatialFilters_ = self.spatialFilters_[:self.n_components]
+        self.spatialFilters = eigen_vecs.T
+        self.spatialFilters = self.spatialFilters[:self.n_components]
         return self
 
     def transform(self, X):
         if X.ndim == 3:
             X_filtred = np.asarray(
-                    [np.dot(self.spatialFilters_, epoch) for epoch in X])
+                    [np.dot(self.spatialFilters, epoch) for epoch in X])
             X_filtred = np.log(calc_var(X_filtred))
         else:
-            X_filtred = np.asarray([np.dot(self.spatialFilters_, X)])
+            X_filtred = np.asarray([np.dot(self.spatialFilters, X)])
             X_filtred = np.log(calc_var(X_filtred))
         return X_filtred
 
